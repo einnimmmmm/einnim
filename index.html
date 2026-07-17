@@ -44,7 +44,7 @@ label.field{font-size:12px;font-weight:750;display:block;margin:9px 0 5px}input,
 <body>
 <div id="app">
 <aside id="sidebar">
-<div class="header"><h1>숙박업 영업지도</h1><span class="version">v2.1</span></div>
+<div class="header"><h1>숙박업 영업지도</h1><span class="version">v2.1.1</span></div>
 <div class="sub">STAYSYNC Sales CRM · 대표 미팅과 방문일지를 현재 기기에 자동 저장</div>
 <div id="offline" class="offline">오프라인 상태야. 저장된 기록은 쓸 수 있지만 지도 타일과 네이버지도는 인터넷이 필요해.</div>
 <div class="toolbar">
@@ -100,8 +100,9 @@ const STATE_KEY='staysync-sales-map-state-v4';
 const SETTINGS_KEY='staysync-sales-map-settings-v1';
 const names={planned:'방문 예정',today:'오늘 방문',visited:'방문 완료',excluded:'영업 제외'};
 const colors={planned:'#22c55e',today:'#e9a800',visited:'#2563eb',excluded:'#ef4444'};
-let hotels=JSON.parse(localStorage.getItem(DB_KEY)||'null')||DEFAULT_HOTELS;
-let savedState=JSON.parse(localStorage.getItem(STATE_KEY)||'{}');
+function safeParseStorage(key,fallback){try{const raw=localStorage.getItem(key);return raw?JSON.parse(raw):fallback}catch(e){console.error('저장 데이터 읽기 오류',key,e);return fallback}}
+let hotels=safeParseStorage(DB_KEY,null)||DEFAULT_HOTELS;
+let savedState=safeParseStorage(STATE_KEY,{});
 const state={};
 function normalizeHotel(h){return {id:h.id||newId(),area:h.area||'',name:h.name||'이름 없음',rooms:h.rooms===null||h.rooms===''?null:Number(h.rooms),note:h.note||'',vendor:h.vendor||'미확인',address:h.address||'정확한 주소 확인 필요',lat:Number(h.lat)||35.22,lon:Number(h.lon)||128.82,approx:h.approx!==false,initialStatus:h.initialStatus||'planned',initialMemo:h.initialMemo||'',initialVisitCount:Number(h.initialVisitCount)||0,initialLastVisit:h.initialLastVisit||'',initialNextVisit:h.initialNextVisit||''}}
 hotels=hotels.map(normalizeHotel);
@@ -112,7 +113,9 @@ function initState(){hotels.forEach(h=>{const base={status:h.initialStatus,memo:
 initState();
 
 const map=L.map('map').setView([35.22,128.82],10);
-const clusterGroup=L.markerClusterGroup({chunkedLoading:true,chunkInterval:80,chunkDelay:20,showCoverageOnHover:false,removeOutsideVisibleBounds:true,maxClusterRadius:55}).addTo(map);
+const clusterGroup=(typeof L.markerClusterGroup==='function'
+  ? L.markerClusterGroup({chunkedLoading:true,chunkInterval:80,chunkDelay:20,showCoverageOnHover:false,removeOutsideVisibleBounds:true,maxClusterRadius:55})
+  : L.layerGroup()).addTo(map);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap'}).addTo(map);
 let markers=[];
 let activeStatus='planned';
@@ -144,7 +147,7 @@ window.deleteHotel=id=>{const h=getHotel(id);if(!h||!confirm(`${h.area} ${h.name
 const areaSel=document.getElementById('area');
 function refreshAreaOptions(){const current=areaSel.value;areaSel.innerHTML='<option value="">전체 지역</option>';[...new Set(hotels.map(h=>h.area).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ko')).forEach(a=>{const o=document.createElement('option');o.value=a;o.textContent=a;areaSel.appendChild(o)});if([...areaSel.options].some(o=>o.value===current))areaSel.value=current}
 function match(h){const q=document.getElementById('search').value.trim().toLowerCase(),area=areaSel.value,min=Number(document.getElementById('minRooms').value||0),s=state[h.id];const logText=(s.logs||[]).map(x=>(x.date||'')+' '+(x.type||'')+' '+(x.note||'')).join(' ');const hay=(h.area+' '+h.name+' '+h.note+' '+h.vendor+' '+h.address+' '+s.memo+' '+s.meeting+' '+s.salesStage+' '+Object.keys(s.actions||{}).filter(k=>s.actions[k]).join(' ')+' '+(s.tags||[]).join(' ')+' '+logText).toLowerCase();return s.status===activeStatus&&(!q||hay.includes(q))&&(!area||h.area===area)&&(!min||(h.rooms||0)>=min)}
-function updateStats(){Object.keys(names).forEach(k=>document.getElementById('c-'+k).textContent=hotels.filter(h=>state[h.id]&&state[h.id].status===k).length)}
+function updateStats(){const total=document.getElementById('c-total');if(total)total.textContent=hotels.length;Object.keys(names).forEach(k=>{const el=document.getElementById('c-'+k);if(el)el.textContent=hotels.filter(h=>state[h.id]&&state[h.id].status===k).length})}
 function updateAll(){updateStats();clusterGroup.clearLayers();const shown=[];const list=document.getElementById('list');list.innerHTML='';markers.forEach(m=>{refreshMarker(m);const h=getHotel(m.hotelId);if(h&&match(h)){clusterGroup.addLayer(m);shown.push(m)}});shown.sort((a,b)=>{const A=getHotel(a.hotelId),B=getHotel(b.hotelId);return A.area.localeCompare(B.area,'ko')||A.name.localeCompare(B.name,'ko')}).forEach(m=>{const h=getHotel(m.hotelId),s=state[h.id],latest=(s.logs||[]).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''))[0],d=document.createElement('div');d.className='item';d.innerHTML=`<b>${esc(h.area+' '+h.name)}</b><small>${esc(s.salesStage||'미접촉')} · ${esc(s.meeting||'대표 미팅 정보 없음')}${latest?' · '+esc(latest.note):s.memo?' · '+esc(s.memo):''}${s.nextVisit?' · 다음 '+s.nextVisit:''}</small>`;d.onclick=()=>{map.setView(m.getLatLng(),15);setTimeout(()=>m.openPopup(),250)};list.appendChild(d)});if(shown.length){const bounds=L.featureGroup(shown).getBounds();if(bounds.isValid())map.fitBounds(bounds.pad(.12),{maxZoom:13})}}
 document.querySelectorAll('.stat').forEach(el=>el.onclick=()=>{document.querySelectorAll('.stat').forEach(x=>x.classList.remove('active'));el.classList.add('active');activeStatus=el.dataset.filter;updateAll()});
 ['search','area','minRooms'].forEach(id=>document.getElementById(id).addEventListener('input',updateAll));
