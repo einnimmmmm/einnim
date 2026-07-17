@@ -1,0 +1,17 @@
+{
+  "files.exclude": {
+    ".git": true,
+    ".gitignore": true,
+    ".vscode": true,
+    "archive": true,
+    "dist": true,
+    "eslint.config.js": true,
+    "index.html": true,
+    "node_modules": true,
+    "package-lock.json": true,
+    "README.txt": true,
+    "tsconfig.app.json": true,
+    "tsconfig.json": true,
+    "tsconfig.node.json": true
+  }
+}

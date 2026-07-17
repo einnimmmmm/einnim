@@ -1,0 +1,35 @@
+{
+  "name": "staysync-sales-map",
+  "private": true,
+  "version": "2.2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "leaflet": "latest",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-leaflet": "latest",
+    "vite": "latest",
+    "vite-plugin-pwa": "latest"
+  },
+  "devDependencies": {
+    "@eslint/js": "latest",
+    "@tailwindcss/vite": "latest",
+    "@types/leaflet": "latest",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "latest",
+    "eslint-plugin-react-hooks": "latest",
+    "eslint-plugin-react-refresh": "latest",
+    "globals": "latest",
+    "tailwindcss": "latest",
+    "typescript": "latest",
+    "typescript-eslint": "latest"
+  }
+}

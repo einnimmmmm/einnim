@@ -1,5 +1,12 @@
 STAYSYNC Sales CRM v2
 
+현재 구조
+- React 19 + TypeScript + Vite
+- Tailwind CSS
+- React Leaflet
+- vite-plugin-pwa 기반 PWA
+- 기존 단일 index.html 구현은 old/ 폴더에 보관
+
 구현 기능
 - 대표 미팅 정보
 - 관심도 0~5단계
@@ -25,3 +32,5 @@ GitHub 업로드
 
 
 [v2.1.1] 지도 클러스터 CDN이 실패해도 데이터와 목록이 표시되도록 복구. 전체 업장 수 자동 표시. 기존 localStorage 키 유지.
+
+[v2.2.0] 단일 index.html 앱을 React + TypeScript + Vite 프로젝트로 전환. 기존 구현은 old/ 폴더로 이동.

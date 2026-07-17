@@ -1,0 +1,393 @@
+import { useEffect, useMemo, useState } from 'react';
+import { Sidebar } from './components/Sidebar';
+import { HotelForm, type EditorDraft } from './components/HotelForm';
+import { Map } from './components/Map';
+import { DEFAULT_HOTELS } from './lib/defaultHotels';
+import { loadSavedHotels, loadSavedState, saveAll } from './lib/storage';
+import type { ActionMap, Filters, Hotel, HotelState, HotelStateMap, SalesStage, VisitStatus } from './types';
+
+const ACTIONS = ['명함 전달', '직원 설명 완료', '대표 미팅 완료', '견적 전달', '프로모션 안내', '계약서 전달', '도입 완료'];
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+}
+
+function newId(): string {
+  return `hotel-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function defaultStage(hotel: Hotel): SalesStage {
+  if (hotel.initialStatus === 'excluded') return '영업제외';
+  if (hotel.initialStatus === 'visited') return '상담중';
+  return '미접촉';
+}
+
+function normalizeHotel(hotel: Partial<Hotel>): Hotel {
+  const rooms = hotel.rooms as number | string | null | undefined;
+  return {
+    id: hotel.id || newId(),
+    area: hotel.area || '',
+    name: hotel.name || '이름 없음',
+    rooms: rooms === null || rooms === undefined || rooms === '' ? null : Number(rooms),
+    note: hotel.note || '',
+    vendor: hotel.vendor || '미확인',
+    address: hotel.address || '정확한 주소 확인 필요',
+    lat: Number(hotel.lat) || 35.22,
+    lon: Number(hotel.lon) || 128.82,
+    approx: hotel.approx !== false,
+    legal: hotel.legal,
+    excluded: hotel.excluded,
+    kiosk: hotel.kiosk,
+    initialStatus: hotel.initialStatus || 'planned',
+    initialMemo: hotel.initialMemo || '',
+    initialVisitCount: Number(hotel.initialVisitCount) || 0,
+    initialLastVisit: hotel.initialLastVisit || '',
+    initialNextVisit: hotel.initialNextVisit || '',
+    initialMeeting: hotel.initialMeeting || '',
+    initialSalesStage: hotel.initialSalesStage,
+    initialTags: Array.isArray(hotel.initialTags) ? hotel.initialTags : []
+  };
+}
+
+function createInitialState(hotel: Hotel, saved?: Partial<HotelState>): HotelState {
+  const base: HotelState = {
+    status: hotel.initialStatus,
+    memo: hotel.initialMemo || '',
+    visitCount: hotel.initialVisitCount || 0,
+    lastVisit: hotel.initialLastVisit || '',
+    nextVisit: hotel.initialNextVisit || '',
+    meeting: hotel.initialMeeting || '',
+    salesStage: hotel.initialSalesStage || defaultStage(hotel),
+    actions: {},
+    tags: hotel.initialTags || [],
+    logs: []
+  };
+
+  const merged: HotelState = {
+    ...base,
+    ...saved,
+    actions: saved?.actions && typeof saved.actions === 'object' ? saved.actions : base.actions,
+    tags: Array.isArray(saved?.tags)
+      ? saved.tags
+      : String(saved?.tags || '')
+          .split(',')
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+    logs: Array.isArray(saved?.logs) ? saved.logs : []
+  };
+
+  if (!merged.logs.length && merged.memo && merged.lastVisit) {
+    merged.logs = [
+      {
+        id: `migrated-${hotel.id}`,
+        date: merged.lastVisit,
+        type: '기존 방문기록',
+        note: merged.memo,
+        createdAt: new Date().toISOString()
+      }
+    ];
+  }
+
+  return merged;
+}
+
+function loadInitialHotels(): Hotel[] {
+  return (loadSavedHotels() || DEFAULT_HOTELS).map(normalizeHotel);
+}
+
+function buildState(hotels: Hotel[], savedState: Partial<HotelStateMap> = loadSavedState()): HotelStateMap {
+  return hotels.reduce<HotelStateMap>((acc, hotel) => {
+    acc[hotel.id] = createInitialState(hotel, savedState[hotel.id]);
+    return acc;
+  }, {});
+}
+
+function downloadJSON(name: string, value: unknown) {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' });
+  const anchor = document.createElement('a');
+  anchor.href = URL.createObjectURL(blob);
+  anchor.download = name;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(anchor.href), 500);
+}
+
+function matchesFilters(hotel: Hotel, state: HotelStateMap, filters: Filters) {
+  const hotelState = state[hotel.id];
+  if (!hotelState || hotelState.status !== filters.status) return false;
+  const minRooms = Number(filters.minRooms || 0);
+  const logText = hotelState.logs.map((log) => `${log.date} ${log.type} ${log.note}`).join(' ');
+  const haystack = [
+    hotel.area,
+    hotel.name,
+    hotel.note,
+    hotel.vendor,
+    hotel.address,
+    hotelState.memo,
+    hotelState.meeting,
+    hotelState.salesStage,
+    Object.keys(hotelState.actions).filter((action) => hotelState.actions[action]).join(' '),
+    hotelState.tags.join(' '),
+    logText
+  ]
+    .join(' ')
+    .toLowerCase();
+
+  return (
+    (!filters.search.trim() || haystack.includes(filters.search.trim().toLowerCase())) &&
+    (!filters.area || hotel.area === filters.area) &&
+    (!minRooms || (hotel.rooms || 0) >= minRooms)
+  );
+}
+
+export default function App() {
+  const [hotels, setHotels] = useState<Hotel[]>(() => loadInitialHotels());
+  const [state, setState] = useState<HotelStateMap>(() => buildState(loadInitialHotels()));
+  const [filters, setFilters] = useState<Filters>({ status: 'planned', search: '', area: '', minRooms: '' });
+  const [labelsVisible, setLabelsVisible] = useState(true);
+  const [selectedHotelId, setSelectedHotelId] = useState<string | null>(null);
+  const [editingHotelId, setEditingHotelId] = useState<string | null>(null);
+  const [isAdding, setIsAdding] = useState(false);
+  const [pickingLocation, setPickingLocation] = useState(false);
+  const [pickedLocation, setPickedLocation] = useState<{ lat: number; lon: number } | null>(null);
+  const [isOnline, setIsOnline] = useState(() => navigator.onLine);
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+
+  useEffect(() => {
+    const syncOnline = () => setIsOnline(navigator.onLine);
+    window.addEventListener('online', syncOnline);
+    window.addEventListener('offline', syncOnline);
+    return () => {
+      window.removeEventListener('online', syncOnline);
+      window.removeEventListener('offline', syncOnline);
+    };
+  }, []);
+
+  useEffect(() => {
+    const onPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+    };
+    const onInstalled = () => setInstallPrompt(null);
+    window.addEventListener('beforeinstallprompt', onPrompt);
+    window.addEventListener('appinstalled', onInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onPrompt);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, []);
+
+  const visibleHotels = useMemo(
+    () =>
+      hotels
+        .filter((hotel) => matchesFilters(hotel, state, filters))
+        .sort((a, b) => a.area.localeCompare(b.area, 'ko') || a.name.localeCompare(b.name, 'ko')),
+    [filters, hotels, state]
+  );
+
+  const areas = useMemo(
+    () => [...new Set(hotels.map((hotel) => hotel.area).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ko')),
+    [hotels]
+  );
+
+  const editingHotel = editingHotelId ? hotels.find((hotel) => hotel.id === editingHotelId) || null : null;
+  const showEditor = (isAdding || Boolean(editingHotel)) && !pickingLocation;
+
+  const commit = (nextHotels: Hotel[], nextState: HotelStateMap) => {
+    setHotels(nextHotels);
+    setState(nextState);
+    saveAll(nextHotels, nextState);
+  };
+
+  const updateStateForHotel = (id: string, updater: (current: HotelStateMap[string]) => HotelStateMap[string]) => {
+    const nextState = { ...state, [id]: updater(state[id]) };
+    commit(hotels, nextState);
+  };
+
+  const handleStatusChange = (id: string, status: VisitStatus) => {
+    updateStateForHotel(id, (current) => ({ ...current, status }));
+  };
+
+  const handleSaveProfile = (id: string, form: FormData) => {
+    const selectedActions = new Set(form.getAll('actions').map(String));
+    const actions = ACTIONS.reduce<ActionMap>((acc, action) => {
+      acc[action] = selectedActions.has(action);
+      return acc;
+    }, {});
+    const salesStage = String(form.get('salesStage') || '미접촉') as SalesStage;
+
+    updateStateForHotel(id, (current) => ({
+      ...current,
+      meeting: String(form.get('meeting') || '').trim(),
+      salesStage,
+      nextVisit: String(form.get('nextVisit') || ''),
+      actions: salesStage === '도입완료' ? { ...actions, '도입 완료': true } : actions,
+      tags: String(form.get('tags') || '').split(',').map((tag) => tag.trim().replace(/^#/, '')).filter(Boolean),
+      memo: String(form.get('memo') || '').trim(),
+      status: salesStage === '영업제외' ? 'excluded' : current.status
+    }));
+  };
+
+  const handleAddVisitLog = (id: string, form: FormData) => {
+    const date = String(form.get('date') || '');
+    const type = String(form.get('type') || '방문');
+    const note = String(form.get('note') || '').trim();
+    if (!date || !note) {
+      alert('방문 날짜와 내용을 입력해줘.');
+      return;
+    }
+
+    updateStateForHotel(id, (current) => {
+      const logs = [...current.logs, { id: `log-${Date.now()}`, date, type, note, createdAt: new Date().toISOString() }];
+      return {
+        ...current,
+        logs,
+        visitCount: logs.length,
+        lastVisit: logs.map((log) => log.date).filter(Boolean).sort().pop() || date,
+        status: type === '계약 완료' ? 'visited' : current.status === 'excluded' ? 'excluded' : 'visited',
+        memo: note
+      };
+    });
+  };
+
+  const handleSaveEditor = (draft: EditorDraft) => {
+    if (draft.id) {
+      const nextHotels = hotels.map((hotel) =>
+        hotel.id === draft.id
+          ? { ...hotel, area: draft.area, name: draft.name, rooms: draft.rooms, address: draft.address, lat: draft.lat, lon: draft.lon, approx: false, note: draft.note, vendor: draft.vendor }
+          : hotel
+      );
+      const nextState = {
+        ...state,
+        [draft.id]: { ...state[draft.id], status: draft.status, meeting: draft.meeting, salesStage: draft.salesStage, tags: draft.tags, actions: draft.actions }
+      };
+      commit(nextHotels, nextState);
+    } else {
+      const id = newId();
+      const hotel = normalizeHotel({ ...draft, id, initialStatus: draft.status, approx: false });
+      const nextHotels = [...hotels, hotel];
+      const nextState = {
+        ...state,
+        [id]: { ...createInitialState(hotel), status: draft.status, meeting: draft.meeting, salesStage: draft.salesStage, tags: draft.tags, actions: draft.actions }
+      };
+      commit(nextHotels, nextState);
+      setSelectedHotelId(id);
+    }
+    setIsAdding(false);
+    setEditingHotelId(null);
+    setPickingLocation(false);
+    setPickedLocation(null);
+  };
+
+  const handleDelete = (id: string) => {
+    const hotel = hotels.find((item) => item.id === id);
+    if (!hotel || !confirm(`${hotel.area} ${hotel.name}을(를) 목록에서 삭제할까? 방문기록도 함께 삭제돼.`)) return;
+    const nextHotels = hotels.filter((item) => item.id !== id);
+    const nextState = { ...state };
+    delete nextState[id];
+    commit(nextHotels, nextState);
+    setSelectedHotelId(null);
+  };
+
+  const handleImport = async (file: File) => {
+    try {
+      const payload = JSON.parse(await file.text()) as { hotels?: Hotel[]; state?: HotelStateMap; data?: HotelStateMap };
+      if (!confirm('현재 목록과 기록을 백업 파일로 교체할까? 교체 전에 현재 데이터를 내보내는 것을 권장해.')) return;
+      if (Array.isArray(payload.hotels)) {
+        const nextHotels = payload.hotels.map(normalizeHotel);
+        const nextState = buildState(nextHotels, payload.state || {});
+        commit(nextHotels, nextState);
+      } else if (payload.data) {
+        commit(hotels, payload.data);
+      } else {
+        throw new Error('Invalid backup format');
+      }
+      alert('백업을 복원했어.');
+    } catch {
+      alert('올바른 영업지도 백업 파일이 아니야.');
+    }
+  };
+
+  const handleClear = () => {
+    if (!confirm('방문상태와 메모를 초기값으로 되돌릴까? 업장 목록은 유지돼.')) return;
+    const nextState = buildState(hotels, {});
+    commit(hotels, nextState);
+    alert('기록을 초기화했어.');
+  };
+
+  return (
+    <div className="app">
+      <Sidebar
+        hotels={visibleHotels}
+        state={state}
+        filters={filters}
+        areas={areas}
+        labelsVisible={labelsVisible}
+        canInstall={Boolean(installPrompt)}
+        isOnline={isOnline}
+        onInstall={async () => {
+          if (!installPrompt) {
+            alert('iPhone은 Safari 공유 버튼에서 “홈 화면에 추가”를 선택해줘.');
+            return;
+          }
+          await installPrompt.prompt();
+          await installPrompt.userChoice;
+          setInstallPrompt(null);
+        }}
+        onAdd={() => {
+          setIsAdding(true);
+          setEditingHotelId(null);
+          setPickedLocation(null);
+        }}
+        onExportAll={() => downloadJSON(`숙박업_영업지도_전체백업_${new Date().toISOString().slice(0, 10)}.json`, { app: 'staysync-sales-map', version: 4, exportedAt: new Date().toISOString(), hotels, state })}
+        onExportHotels={() => downloadJSON(`숙박업_영업지도_업장목록_${new Date().toISOString().slice(0, 10)}.json`, { app: 'staysync-sales-map-hotels', version: 1, hotels })}
+        onImport={handleImport}
+        onClear={handleClear}
+        onFiltersChange={setFilters}
+        onLabelsChange={setLabelsVisible}
+        onSelectHotel={(hotel) => setSelectedHotelId(hotel.id)}
+      />
+      <Map
+        hotels={visibleHotels}
+        state={state}
+        labelsVisible={labelsVisible}
+        selectedHotelId={selectedHotelId}
+        pickingLocation={pickingLocation}
+        onSelectHotel={(hotel) => setSelectedHotelId(hotel.id)}
+        onPickedLocation={(lat, lon) => {
+          setPickedLocation({ lat, lon });
+          setPickingLocation(false);
+          setIsAdding((current) => current || !editingHotelId);
+        }}
+        onStatusChange={handleStatusChange}
+        onSaveProfile={handleSaveProfile}
+        onAddVisitLog={handleAddVisitLog}
+        onEdit={(id) => {
+          setEditingHotelId(id);
+          setIsAdding(false);
+          setPickedLocation(null);
+        }}
+        onDelete={handleDelete}
+      />
+      {showEditor && (
+        <HotelForm
+          hotel={editingHotel}
+          hotelState={editingHotel ? state[editingHotel.id] : null}
+          mapCenter={{ lat: 35.22, lon: 128.82 }}
+          pickedLocation={pickedLocation}
+          onSave={handleSaveEditor}
+          onClose={() => {
+            setIsAdding(false);
+            setEditingHotelId(null);
+            setPickingLocation(false);
+            setPickedLocation(null);
+          }}
+          onPickLocation={() => setPickingLocation(true)}
+          key={`${editingHotel?.id || 'new'}-${pickedLocation?.lat || 'x'}-${pickedLocation?.lon || 'x'}`}
+        />
+      )}
+    </div>
+  );
+}
